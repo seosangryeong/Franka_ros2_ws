@@ -8,67 +8,54 @@
 - 유선 이더넷 포트(내장 또는 USB-이더넷). Control Box C2(Shop Floor 포트)에 직결한다.
 - RT 커널은 필수 아님(기존 노트북도 일반 커널). 다만 기존 노트북에서 bringup abort(-6)가 2회 있었고 원인 미확정.
 
-## 1. 이 묶음에 들어 있는 것
+## 1. 저장소 구성
 
-| 파일 | 내용 |
+GitHub 비공개 저장소: https://github.com/yezin293/franka_ros2_ws
+
+| 경로 | 내용 |
 |---|---|
-| franka_ros2_local_changes.patch | franka_ros2 v2.0.2에 대한 수정 5개 (controllers.yaml, move_group.launch.py, moveit.rviz, franka_semantic_components/CMakeLists.txt, 새 fr3_arm_controller_real.yaml) |
+| fr3.repos | 원본 패키지 4개(libfranka 0.15.0, franka_ros2 v2.0.2, franka_description 1.0.1, olvx c3444ed) 주소와 버전 |
+| migration/franka_ros2_local_changes.patch | franka_ros2 v2.0.2에 대한 수정 5개 (controllers.yaml, move_group.launch.py, moveit.rviz, franka_semantic_components/CMakeLists.txt, 새 fr3_arm_controller_real.yaml) |
 | src/fr3_skills/ | 우리가 만든 동작 패키지 (move_home) |
 | scripts/ | small_joint_move.py |
-| CLAUDE_HANDOFF_KO.md, PROJECT_CONTEXT.md, FRANKA_PROJECT_PLAN_KO.md | 진행 기록 (Claude는 CLAUDE_HANDOFF_KO.md부터 읽는다) |
+| CLAUDE_HANDOFF_KO.md 등 문서 | 진행 기록 (Claude는 CLAUDE_HANDOFF_KO.md부터 읽는다) |
 
-원본 패키지(franka_ros2, libfranka, franka_description, olvx_descriptions_module)는 묶음에 없다. 아래 2단계에서 같은 버전을 받는다.
+원본 패키지와 build/install/log는 저장소에 없다(.gitignore). 아래 2~3단계로 만든다.
 
-## 2. 워크스페이스 만들기
+## 2. 저장소 받기 (새 컴퓨터에서 처음 한 번)
+
+clone 하면 그 시점 최신 내용을 모두 받으므로 clone 직후 git pull은 필요 없다.
 
 ```bash
-mkdir -p ~/franka_ros2_ws/src
+git clone https://github.com/yezin293/franka_ros2_ws.git ~/franka_ros2_ws
 ```
 
 ```bash
-cd ~/franka_ros2_ws/src
+cd ~/franka_ros2_ws
+```
+
+## 3. 원본 패키지 받기와 패치 적용 (처음 한 번)
+
+vcs 명령이 없으면 먼저 설치:
+
+```bash
+sudo apt install python3-vcstool
+```
+
+fr3.repos에 적힌 버전으로 원본 패키지 4개를 src/에 받는다:
+
+```bash
+vcs import --recursive src < fr3.repos
+```
+
+franka_ros2에 우리 수정사항 적용:
+
+```bash
+git -C src/franka_ros2 apply ../../migration/franka_ros2_local_changes.patch
 ```
 
 ```bash
-git clone --recursive --branch 0.15.0 https://github.com/frankarobotics/libfranka.git
-```
-
-```bash
-git clone --branch v2.0.2 https://github.com/frankarobotics/franka_ros2.git
-```
-
-```bash
-git clone --branch 1.0.1 https://github.com/frankarobotics/franka_description.git
-```
-
-```bash
-git clone https://github.com/olive-robotics/olvx_descriptions_module.git
-```
-
-olvx_descriptions_module은 기존 노트북에서 commit c3444ed였다. 같은 상태로 맞추려면:
-
-```bash
-git -C olvx_descriptions_module checkout c3444ed
-```
-
-## 3. 묶음 풀기와 패치 적용
-
-압축 파일을 홈(~)에 둔 상태에서:
-
-```bash
-tar -xzf ~/fr3_migration_20261007.tar.gz -C ~/franka_ros2_ws
-```
-
-```bash
-cd ~/franka_ros2_ws/src/franka_ros2
-```
-
-```bash
-git apply ~/franka_ros2_ws/migration/franka_ros2_local_changes.patch
-```
-
-```bash
-git status --short
+git -C src/franka_ros2 status --short
 ```
 
 수정(M) 4개 + 새 파일(??) 1개가 보이면 정상.
@@ -144,3 +131,43 @@ ros2 launch franka_bringup franka.launch.py arm_id:=fr3 use_fake_hardware:=true 
 
 - Claude 메모리(~/.claude/projects/...): 핵심 선호는 CLAUDE_HANDOFF_KO.md에 옮겨 적음 (명령은 코드블록 하나당 하나, 원리 설명 위주).
 - Desk 계정 비밀번호: 문서에 저장하지 않음.
+
+## 9. 두 컴퓨터를 오가며 작업하기 (2~7단계를 한 번 마친 뒤)
+
+작업 시작 전, 다른 컴퓨터에서 올린 내용 받기:
+
+```bash
+git pull
+```
+
+작업 후 바뀐 파일 확인:
+
+```bash
+git status
+```
+
+올릴 파일 담기:
+
+```bash
+git add -A
+```
+
+변경 내용 설명과 함께 기록:
+
+```bash
+git commit -m "변경 내용 한 줄 설명"
+```
+
+GitHub에 올리기 (Username: 아이디, Password: 토큰):
+
+```bash
+git push
+```
+
+pull로 fr3_skills 등 src/ 아래 코드가 바뀌었으면 다시 빌드한다 (symlink-install이라 Python 파일만 바뀐 경우는 대개 불필요, 새 파일/패키지가 생기면 필요):
+
+```bash
+colcon build --symlink-install --packages-select fr3_skills
+```
+
+주의: franka_ros2 안을 고쳤다면 저장소에는 패치 파일만 올라가므로 패치를 다시 만들어야 한다. 이 경우 Claude에게 요청한다.

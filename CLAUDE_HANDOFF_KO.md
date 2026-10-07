@@ -174,4 +174,5 @@ Codex 응답이2~3회 질문 뒤 멈추고 재접속하면 복구된다는 사�
 - 새 패키지 src/fr3_skills (ament_python): motion.py의 Fr3Motion(현재 관절 이름 매핑, MoveGroup 계획, 계획 요약, 컨트롤러 active 확인 후 ExecuteTrajectory, scaling 상한 0.2), `ros2 run fr3_skills move_home [--execute] [--scaling]`. HOME = config/poses.yaml = SRDF ready. 실물 미검증.
 - fake hardware(도메인77)로 계획/실행거부/scaling 거부 확인. 테스트 프로세스 정리.
 - 합의한 구조: ①드라이버 ②fr3_skills ③perception/calibration ④bin_picking 상태머신. 카메라 전에 가짜 물체 좌표로 ④ 먼저.
-- 사용자가 더 큰 노트북(ROS 기반)으로 실물 제어까지 이전 희망. 이전 묶음 ~/fr3_migration_20261007.tar.gz(28K) 생성: migration/MIGRATION_KO.md(단계별 가이드), franka_ros2_local_changes.patch(v2.0.2 깨끗한 checkout에 git apply --check 통과), fr3_skills, scripts, 문서 3개. 원본 패키지는 같은 태그로 재clone. 새 노트북 사양(Ubuntu/ROS 버전, 이더넷) 미확인. GitHub push 안 함.
+- 사용자가 더 큰 노트북(ROS 기반)으로 실물 제어까지 이전 희망. 이전 묶음 ~/fr3_migration_20261007.tar.gz(28K) 생성: migration/MIGRATION_KO.md(단계별 가이드), franka_ros2_local_changes.patch(v2.0.2 깨끗한 checkout에 git apply --check 통과), fr3_skills, scripts, 문서 3개. 원본 패키지는 같은 태그로 재clone. 새 노트북 사양(Ubuntu/ROS 버전, 이더넷) 미확인.
+- 이후 GitHub 비공개 저장소 https://github.com/yezin293/franka_ros2_ws 로 전환(사용자가 직접 push). 압축 묶음 대신 clone → vcs import --recursive src < fr3.repos → 패치 적용. 운영: git pull → 작업 → commit → push. 원본 패키지는 .gitignore, franka_ros2 수정 시 migration/ 패치 재생성 필요.

@@ -17,7 +17,7 @@ Franka Research 3 실물을 ROS2 Humble + MoveIt2로 제어하고, 이후 카메
 ## 새 컴퓨터에서 받기
 
 ```bash
-git clone <이 저장소 주소> ~/franka_ros2_ws
+git clone https://github.com/yezin293/franka_ros2_ws.git ~/franka_ros2_ws
 ```
 
 ```bash
@@ -32,4 +32,4 @@ vcs import --recursive src < fr3.repos
 git -C src/franka_ros2 apply ../../migration/franka_ros2_local_changes.patch
 ```
 
-이후 의존성 설치, 빌드, rtprio, 네트워크 설정은 migration/MIGRATION_KO.md 4~7단계를 따른다.
+이후 의존성 설치, 빌드, rtprio, 네트워크 설정은 migration/MIGRATION_KO.md 4~7단계, 두 컴퓨터를 오가는 방법(git pull → 작업 → git push)은 9단계를 따른다.
