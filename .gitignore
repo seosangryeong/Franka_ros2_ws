@@ -1,0 +1,14 @@
+# colcon outputs
+build/
+install/
+log/
+
+# upstream packages: versions are pinned in fr3.repos, local changes in migration/*.patch
+src/franka_ros2/
+src/libfranka/
+src/franka_description/
+src/olvx_descriptions_module/
+
+__pycache__/
+*.pyc
+.vscode/
