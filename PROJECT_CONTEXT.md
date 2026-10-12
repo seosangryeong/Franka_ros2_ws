@@ -1,8 +1,37 @@
 # Franka 프로젝트 현장 정보 및 재개 기록
 
-## 최신 인수인계: 2026-10-02 — Claude로 이전
+## 최신 인수인계: 2026-10-12 — Cartesian path로 손목 꼬임 해결, pick/place 실물 성공
 
-이 절이 아래 과거 기록보다 우선한다. 전체 인수인계는 [CLAUDE_HANDOFF_KO.md](CLAUDE_HANDOFF_KO.md)를 먼저 읽는다.
+이 절이 아래 과거 기록보다 우선한다. 전체 인수인계는 [CLAUDE_HANDOFF_KO.md](CLAUDE_HANDOFF_KO.md)를 먼저 읽는다(맨 아래 "2026-10-12" 절이 가장 최신 — **실물 재개 전 "2026-10-08 오후~저녁"의 "2. 실물 충돌 사고와 복구" 절도 필독**).
+
+- **Git 커밋이 10/7 이후로 밀려있음** — 작업은 전부 로컬에만 있고 커밋/푸시 안 됨. 다른 컴퓨터로 옮기면 없다, 먼저 확인할 것.
+- 테이블 충돌 모델(10/8 확정값)이 세션 재시작 후에도 코드엔 그대로 저장돼 있음을 확인했지만, **MoveIt 플래닝 씬 자체는 move_group 재시작마다 초기화**되므로 매번 `ensure_table_collision()` 재호출 필요(pose_listener/move_home/pick_place가 자동으로 함). MoveIt이 실제로 팔 전체를 보호하는지(목표점뿐 아니라)도 직접 재검증 완료.
+- `pick()`/`place()`에 `dry_run`(plan-only) 모드 추가 — 10/8 사고 이후인데도 빠져있던 안전장치, 지금은 `pick_place.py`도 기본값이 plan-only(`--execute`로 전환).
+- **손목이 꼬이던 문제 해결**: descend/retreat을 OMPL 대신 **Cartesian path**(`compute_cartesian_path`, 직선 경로)로 교체. 이 서비스가 이미 시간 파라미터화된 trajectory를 반환한다는 것도 실측으로 확인. 속도 스케일링 기준이 OMPL과 달라서 별도 상수(`CARTESIAN_MAX_SCALING=1.0`)로 분리(처음엔 기존 캡 재사용했다가 10cm 하강이 23초 걸리는 버그 발생 → 수정).
+- pick_place 기본 방향을 identity(거의 항상 도달 불가)에서 "아래로 향하는" 방향(roll 180°)으로 변경.
+- **plan-only 검증 후 `--execute`로 실물 pick/place 성공** — 10/8 사고 이후 첫 실물 성공.
+
+- **실물 충돌 발생**: pick/place 테스트 중 손목 관절이 테이블 프로파일 레일(기존 충돌 모델엔 없던, z>0인 구조물)에 접촉 → 비상정지. 복구 과정에서 외부 인에이블링 장치(펜던트)가 이 연구실에 없다는 게 확인됨 — 공식 Desk 복구 다이얼로그를 못 씀. 최종적으로 재부팅 + unlock 순간 손으로 접촉을 떼어내서 해결(사용자 직접 수행). 재발 시 같은 방법 또는 담당자/Franka 지원팀 문의 필요.
+- `pick(pose)`/`place(pose)` 구현 완료. 실제 그립 지점은 `fr3_hand_tcp`(link8에서 0.1034m)여야 하는데 그 링크로 직접 IK가 안 되는 버그(`GOAL_STATE_INVALID`) 발견 → 수학적 좌표 변환으로 해결.
+- `move_group.launch.py`의 `joint_states` 리맵이 그리퍼 조인트를 영원히 못 보던 버그 수정.
+- **테이블 충돌 모델을 실측(STL/DAE 메시 직접 파싱)으로 정밀 보정** — X축으로 베이스가 16cm 더 튀어나와 있던 것 수정, 사용자가 RViz로 실제와 대조 확인("실제로 이렇게 되어있어"). 처음엔 모델 자체에 10cm 안전 마진을 넣었다가 베이스가 파묻혀 보이는 문제로 되돌리고, **모델은 실제와 정확히 일치시키고 안전 여유는 목표점 체크(`MIN_Z`=3cm)로 분리**하는 설계로 최종 정리.
+
+- `move_group.launch.py`에 `load_gripper:=true`일 때만 그리퍼 MoveIt 컨트롤러를 추가하는 로직 추가, 동시에 예전부터 미해결이던 "`fr3_gripper`(공식 yaml) vs `franka_gripper`(실제 노드명)" 이름 불일치 버그를 고쳐서 RViz의 hand group Plan/Execute가 실제로 동작하게 만듦(사용자 확인).
+- 그리퍼 최초 실물 검증: Homing 1차 실패(장애물 의심, 재시도로 해결) → 성공, Move(폭 지정 이동) 성공.
+- 사용자 요청으로 팔 컨트롤러 activate/deactivate와 그리퍼 제어를 `fr3_skills/motion.py`의 `Fr3Motion` 클래스 하나로 통합. `pose_listener`/`move_home`의 `--execute`가 이제 컨트롤러 active/inactive를 스스로 처리해서, 터미널에서 따로 `ros2 control set_controller_state`를 안 쳐도 됨(안전 규칙 자체는 유지, 자동화만 됨).
+- **작업영역 안전 범위 구현 완료**: `plan_to_pose()`에 목표 z<0 즉시 거부 + MoveIt 플래닝 씬에 실제 테이블 치수(0.6×0.6×0.8m, 사용자가 알려준 베이스 장착 위치 기준)의 `table_floor` 충돌 객체 등록. 팔의 어떤 링크든 그 박스에 닿는 계획은 MoveIt이 자동으로 거부함(목표점뿐 아니라 팔 전체 보호). `pose_listener`/`move_home` 시작 시 자동 등록, 실물에서 z<0/z>0 양쪽 다 검증 완료.
+- 그리퍼 터미널 CLI(`ros2 run fr3_skills gripper --open|--close|--grasp WIDTH|...`) 추가, `move_home --execute`가 이제 팔 홈 이동 후 그리퍼까지 자동으로 염(`load_gripper:=true` 전제) — 실물 검증 완료.
+- 정정: `export PATH=/usr/bin:$PATH`는 `colcon build`할 때만 필요(실행 파일 shebang이 `/usr/bin/python3`로 고정돼 있어 실행에는 PATH 영향 없음). `source /opt/ros/humble/setup.bash`도 `.bashrc`에 이미 자동으로 들어가 있어 매번 안 쳐도 됨.
+- 남은 미해결: `pick`/`place` 상위 함수 아직 없음, migration 패치 재생성 필요(franka_ros2를 또 수정함).
+
+- 작업 환경이 바뀌었다: hostname `wynz-NUC11PHi7`, 계정 `wynz`, 워크스페이스 `/home/wynz/franka_ros2_ws`, 이더넷 `enp89s0`. GitHub 저장소(https://github.com/yezin293/franka_ros2_ws)에서 clone → vcs import → 패치 적용 → 빌드까지 처음부터 재구성했다.
+- 빌드 실패(conda python3가 numpy 없어 eigenpy/pinocchio 실패) → `build/install/log` 삭제 후 `-DPYTHON_EXECUTABLE=/usr/bin/python3` 명시로 해결, 16개 패키지 전부 빌드 성공.
+- rtprio 적용 실패(PAM limits.d만으론 부족, GNOME 세션은 `user@1000.service`의 자식이라 그 서비스 자체의 `LimitRTPRIO=0`을 못 넘음) → systemd 드롭인(`/etc/systemd/system/user@.service.d/rtprio.conf`) + 재부팅으로 해결, `ulimit -r`=99 확인.
+- 네트워크(enp89s0, franka-direct 프로필) 연결 및 FCI activate 완료.
+- 실물 bringup → MoveIt(execute:=true) → spawner --inactive → activate → RViz **Plan/Execute 성공** → deactivate, 기존 노트북에서의 성공을 새 노트북에서 재현. ros2_control_node 크래시 없음(이번 세션 한도 내).
+- `fr3_skills`의 `move_home`을 **최초로 실물 검증** — 성공. HOME = franka_description 공식 SRDF "ready" 자세임을 재확인(임의 값 아님). `poses.yaml` 주석 갱신 완료.
+- **사용자가 제시한 다음 목표(물체 pose pub → 자동 이동)를 같은 날 구현 + 실물 검증 완료.** `motion.py`에 `plan_to_pose()`(Cartesian 목표) 추가, 신규 노드 `fr3_skills/pose_listener.py`(`/object_pose` 구독, `--execute`로 plan-only/실제이동 전환). 구현 중 발견한 버그: 구독 콜백 안에서 `rclpy.spin_once()`를 중첩 호출하면 `rclpy.spin()` 실행기가 꼬여 "no /franka/joint_states" 오탐 발생 — 콜백은 메시지 저장만, 처리는 메인 루프에서 콜백 밖에서 수행하도록 수정해 해결. 실물에서 pose publish → 자동 이동까지 성공 확인.
+- 알려진 한계: 작업영역/안전 범위 검사 없음(들어온 pose가 뭐든 IK/충돌 체크만 통과하면 실행됨) — 다음 작업 1순위. 그리퍼 연동, Bin Picking 상태머신(가짜 좌표)이 그 다음. 카메라는 여전히 맨 마지막.
 
 - 사용자가 RViz에서 Plan/Execute를 눌렀지만 실물은 움직이지 않았다고 보고했다. 실물 모션 성공은 아직 없다.
 - 오늘 파일 재확인: move_group.launch.py의 allow_trajectory_execution=False 유지. 기본 bringup은 상태 broadcaster만 활성화하는 구성이다. 실행 가능한 trajectory 연결은 아직 구현하지 않았다.

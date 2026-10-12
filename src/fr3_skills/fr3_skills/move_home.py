@@ -1,7 +1,9 @@
-"""Move fr3_arm to the 'home' pose from config/poses.yaml.
+"""Move fr3_arm to the 'home' pose from config/poses.yaml, gripper open.
 
   ros2 run fr3_skills move_home              # plan only, prints the plan
-  ros2 run fr3_skills move_home --execute    # plan, then move (controller must be active)
+  ros2 run fr3_skills move_home --execute    # plan, then move arm + open gripper --
+                                              # activates/deactivates fr3_arm_controller
+                                              # itself. Needs bringup with load_gripper:=true.
 """
 import argparse
 import sys
@@ -18,7 +20,12 @@ def move_home(motion, scaling=0.1, execute=False):
     if not execute:
         print('plan only (not executed)')
         return
-    motion.execute(trajectory)
+    motion.activate_arm()
+    try:
+        motion.execute(trajectory)
+    finally:
+        motion.deactivate_arm()
+    motion.open_gripper()
     print('done. now:', ' '.join(f'{v:+.3f}' for v in motion.current_joints().values()))
 
 
@@ -31,6 +38,7 @@ def main():
     rclpy.init()
     motion = Fr3Motion()
     try:
+        motion.ensure_table_collision()
         move_home(motion, args.scaling, args.execute)
     except (RuntimeError, ValueError) as e:
         print('stopped:', e)
