@@ -1,10 +1,13 @@
 # Franka 프로젝트 현장 정보 및 재개 기록
 
-## 최신 인수인계: 2026-10-12 — Cartesian path로 손목 꼬임 해결, pick/place 실물 성공
+## 최신 인수인계: 2026-10-12 오후 — 카메라 연결 + 색상 검출 → 실물 이동 파이프라인 완성
 
-이 절이 아래 과거 기록보다 우선한다. 전체 인수인계는 [CLAUDE_HANDOFF_KO.md](CLAUDE_HANDOFF_KO.md)를 먼저 읽는다(맨 아래 "2026-10-12" 절이 가장 최신 — **실물 재개 전 "2026-10-08 오후~저녁"의 "2. 실물 충돌 사고와 복구" 절도 필독**).
+이 절이 아래 과거 기록보다 우선한다. 전체 인수인계는 [CLAUDE_HANDOFF_KO.md](CLAUDE_HANDOFF_KO.md)를 먼저 읽는다(맨 아래 "2026-10-12 오후" 절이 가장 최신 — **실물 재개 전 "2026-10-08 오후~저녁"의 "2. 실물 충돌 사고와 복구" 절도 필독**).
 
-- **Git 커밋이 10/7 이후로 밀려있음** — 작업은 전부 로컬에만 있고 커밋/푸시 안 됨. 다른 컴퓨터로 옮기면 없다, 먼저 확인할 것.
+- **Git 커밋이 밀려있음** — 오전 작업은 커밋됨(`5bbe7bb`), 오후 카메라 작업(스크립트 5개 + `object_pose_publisher.py`)은 아직 안 됨. 다른 컴퓨터로 옮기면 없다, 먼저 확인할 것.
+- **카메라(OBSBOT Tiny 2 Lite) 연결 → 호모그래피 보정 → 색상 검출 → 로봇 이동까지 전체 파이프라인 1차 완성.** `v4l2-ctl`로 모터 짐벌 틸트 원격 제어, 테이블 모서리 4점 클릭 보정(`scripts/calibrate_homography.py` → `scripts/homography.json`), 파란 물체 색상 검출(`scripts/detect_blue.py`), 신규 노드 `object_pose_publisher`(카메라→검출→`/object_pose` publish)가 `pose_listener`와 실제로 연결돼 동작 확인.
+- 과정에서 버그 4개 발견/수정: 카메라 기본 해상도(640x480)가 보정 기준(3840x2160)과 안 맞던 것(MJPG 포맷 강제 지정으로 해결), 포맷 전환 직후 첫 프레임이 검은 화면, 검출이 가끔 실패(재시도 루프로 해결), 1회성 publish가 구독자 연결 전에 나가 유실되던 것(구독자 수 확인 후 publish로 해결).
+- 알려진 한계: 테이블 가장자리 근처에서 낮은 z는 IK 도달범위 밖(버그 아님, 실측 확인), 같은 목표라도 매번 팔 자세가 다른 건 7축 여유자유도+OMPL 랜덤 샘플링 때문(정상, Cartesian path로 바꾸면 일관됨 — 다음 작업 후보), 호모그래피 Y축 좌우 가정 아직 미검증.
 - 테이블 충돌 모델(10/8 확정값)이 세션 재시작 후에도 코드엔 그대로 저장돼 있음을 확인했지만, **MoveIt 플래닝 씬 자체는 move_group 재시작마다 초기화**되므로 매번 `ensure_table_collision()` 재호출 필요(pose_listener/move_home/pick_place가 자동으로 함). MoveIt이 실제로 팔 전체를 보호하는지(목표점뿐 아니라)도 직접 재검증 완료.
 - `pick()`/`place()`에 `dry_run`(plan-only) 모드 추가 — 10/8 사고 이후인데도 빠져있던 안전장치, 지금은 `pick_place.py`도 기본값이 plan-only(`--execute`로 전환).
 - **손목이 꼬이던 문제 해결**: descend/retreat을 OMPL 대신 **Cartesian path**(`compute_cartesian_path`, 직선 경로)로 교체. 이 서비스가 이미 시간 파라미터화된 trajectory를 반환한다는 것도 실측으로 확인. 속도 스케일링 기준이 OMPL과 달라서 별도 상수(`CARTESIAN_MAX_SCALING=1.0`)로 분리(처음엔 기존 캡 재사용했다가 10cm 하강이 23초 걸리는 버그 발생 → 수정).

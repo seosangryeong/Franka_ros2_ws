@@ -25,6 +25,7 @@ setup(
             'pose_listener = fr3_skills.pose_listener:main',
             'gripper = fr3_skills.gripper:main',
             'pick_place = fr3_skills.pick_place:main',
+            'object_pose_publisher = fr3_skills.object_pose_publisher:main',
         ],
     },
 )

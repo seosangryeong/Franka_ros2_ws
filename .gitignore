@@ -12,3 +12,9 @@ src/olvx_descriptions_module/
 __pycache__/
 *.pyc
 .vscode/
+
+# test photos saved straight into the workspace root (e.g. from cheese) --
+# scripts/homography.json (the actual calibration result) is still tracked.
+/*.jpg
+/*.jpeg
+/*.png
