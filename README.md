@@ -1,3 +1,9 @@
+**Xbox 조작:** [XBOX_TELEOP_KO.md](XBOX_TELEOP_KO.md) — LB를 누르는 동안 저속 이동·회전.
+
+**실물 제어 사용법:** [QUICK_START_KO.md](QUICK_START_KO.md) — 로봇 전원·FCI·RViz·Execute 순서.
+
+> **2026-10-15 통합 환경:** 현재는 `~/ros2_ws`에서 빌드합니다. 아래 독립 워크스페이스 설치법 대신 [UNIFIED_WORKSPACE_KO.md](UNIFIED_WORKSPACE_KO.md)를 따르세요.
+
 # franka_ros2_ws: FR3 실물 제어 + Bin Picking
 
 Franka Research 3 실물을 ROS2 Humble + MoveIt2로 제어하고, 이후 카메라 기반 Bin Picking으로 확장하는 워크스페이스.

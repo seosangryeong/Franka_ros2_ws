@@ -10,6 +10,216 @@ index c03cdcc..43892fa 100644
        lock_try_count: 5 # Number of attempts to acquire the lock in a single on_update()
        lock_sleep_interval: 5 # microseconds sleep between attempts
        lock_log_error: true #  Log error if lock acquisition fails - false == do not log  
+diff --git a/franka_fr3_moveit_config/launch/move_group.launch.py b/franka_fr3_moveit_config/launch/move_group.launch.py
+index f232904..891a0d2 100644
+--- a/franka_fr3_moveit_config/launch/move_group.launch.py
++++ b/franka_fr3_moveit_config/launch/move_group.launch.py
+@@ -19,7 +19,8 @@ import os
+ 
+ from ament_index_python.packages import get_package_share_directory
+ from launch import LaunchDescription
+-from launch.actions import DeclareLaunchArgument
++from launch.actions import DeclareLaunchArgument, OpaqueFunction
++from launch.conditions import IfCondition
+ from launch.substitutions import Command, FindExecutable, LaunchConfiguration
+ from launch_ros.actions import Node
+ from launch_ros.parameter_descriptions import ParameterValue
+@@ -49,6 +50,7 @@ def generate_launch_description():
+     fake_sensor_commands = LaunchConfiguration(
+         fake_sensor_commands_parameter_name)
+     namespace = LaunchConfiguration(namespace_parameter_name)
++    execute = LaunchConfiguration('execute')
+ 
+     db_arg = DeclareLaunchArgument(
+         'db', default_value='False', description='Database flag'
+@@ -94,23 +96,119 @@ def generate_launch_description():
+     robot_description_semantic = {'robot_description_semantic': ParameterValue(
+         robot_description_semantic_command, value_type=str)}
+ 
+-    kinematics_yaml = load_yaml(
+-        'franka_fr3_moveit_config', 'config/kinematics.yaml')
+-
+-    run_move_group_node = Node(
+-        package='moveit_ros_move_group',
+-        executable='move_group',
+-        namespace=namespace,
+-        parameters=[
+-            robot_description,
+-            robot_description_semantic,
+-            kinematics_yaml,
+-        ],
++    kinematics_yaml = {'robot_description_kinematics': load_yaml(
++        'franka_fr3_moveit_config', 'config/kinematics.yaml')}
++    ompl_config = load_yaml('franka_fr3_moveit_config', 'config/ompl_planning.yaml')
++    # The bundled planner configuration still uses the former Panda group names.
++    ompl_config['fr3_arm'] = ompl_config.pop('panda_arm')
++    ompl_config.pop('panda_arm_hand', None)
++    ompl_config.update({
++        'planning_plugin': 'ompl_interface/OMPLPlanner',
++        'request_adapters': 'default_planner_request_adapters/AddTimeOptimalParameterization '
++                            'default_planner_request_adapters/ResolveConstraintFrames '
++                            'default_planner_request_adapters/FixWorkspaceBounds '
++                            'default_planner_request_adapters/FixStartStateBounds '
++                            'default_planner_request_adapters/FixStartStateCollision '
++                            'default_planner_request_adapters/FixStartStatePathConstraints',
++        'start_state_max_bounds_error': 0.1,
++    })
++    planning_parameters = {
++        'planning_pipelines': ['ompl'],
++        'default_planning_pipeline': 'ompl',
++        'ompl': ompl_config,
++        # Plan-only by default. execute:=true connects to fr3_arm_controller
++        # (load it with config/fr3_arm_controller_real.yaml first).
++        'allow_trajectory_execution': ParameterValue(execute, value_type=bool),
++        'publish_planning_scene': True,
++        'publish_geometry_updates': True,
++        'publish_state_updates': True,
++        'publish_transforms_updates': True,
++    }
++
++    trajectory_execution = {
++        'moveit_manage_controllers': False,
++        'trajectory_execution.execution_duration_monitoring': True,
++        'trajectory_execution.allowed_execution_duration_scaling': 1.2,
++        'trajectory_execution.allowed_goal_duration_margin': 0.5,
++        'trajectory_execution.allowed_start_tolerance': 0.01,
++    }
++
++    def generate_move_group_node(context):
++        # fr3_arm_controller always; franka_gripper (GripperCommand) only when the
++        # hand is actually part of the model/bringup. Controller name must match the
++        # real node name 'franka_gripper' (see franka_gripper/launch/gripper.launch.py),
++        # not the 'fr3_gripper' name used in the stock fr3_controllers.yaml -- that
++        # name doesn't match any running action server.
++        load_gripper_value = LaunchConfiguration('load_gripper').perform(context) == 'true'
++        # franka_bringup only merges franka/joint_states + franka_gripper/joint_states
++        # into the combined '/joint_states' when the gripper is actually in the
++        # model; with just the arm, 'franka/joint_states' has everything already.
++        # Hardcoding the arm-only remap regardless of load_gripper left move_group
++        # unable to ever see the gripper's joint state (constant "missing
++        # fr3_finger_joint1" warning, functionally harmless here but noisy).
++        joint_states_topic = '/joint_states' if load_gripper_value else 'franka/joint_states'
++        moveit_controllers = {
++            'moveit_controller_manager':
++                'moveit_simple_controller_manager/MoveItSimpleControllerManager',
++            'moveit_simple_controller_manager': {
++                'controller_names': ['fr3_arm_controller'],
++                'fr3_arm_controller': {
++                    'type': 'FollowJointTrajectory',
++                    'action_ns': 'follow_joint_trajectory',
++                    'default': True,
++                    'joints': [f'fr3_joint{i}' for i in range(1, 8)],
++                },
++            },
++        }
++        if load_gripper_value:
++            manager = moveit_controllers['moveit_simple_controller_manager']
++            manager['controller_names'].append('franka_gripper')
++            manager['franka_gripper'] = {
++                'type': 'GripperCommand',
++                'action_ns': 'gripper_action',
++                'default': True,
++                'joints': ['fr3_finger_joint1', 'fr3_finger_joint2'],
++            }
++
++        return [Node(
++            package='moveit_ros_move_group',
++            executable='move_group',
++            namespace=namespace,
++            output='screen',
++            remappings=[('joint_states', joint_states_topic)],
++            parameters=[
++                robot_description,
++                robot_description_semantic,
++                kinematics_yaml,
++                planning_parameters,
++                moveit_controllers,
++                trajectory_execution,
++            ],
++        )]
++
++    run_move_group_node = OpaqueFunction(function=generate_move_group_node)
++
++    rviz_node = Node(
++        package='rviz2', executable='rviz2', namespace=namespace, output='screen',
++        arguments=['-d', os.path.join(get_package_share_directory(
++            'franka_fr3_moveit_config'), 'rviz', 'moveit.rviz')],
++        parameters=[robot_description, robot_description_semantic, kinematics_yaml],
++        condition=IfCondition(LaunchConfiguration('use_rviz')),
+     )
+ 
+     return LaunchDescription(
+         [
+             db_arg,
++            DeclareLaunchArgument(robot_ip_parameter_name, default_value='172.16.0.2'),
++            DeclareLaunchArgument(load_gripper_parameter_name, default_value='false'),
++            DeclareLaunchArgument(use_fake_hardware_parameter_name, default_value='false'),
++            DeclareLaunchArgument(fake_sensor_commands_parameter_name, default_value='false'),
++            DeclareLaunchArgument(namespace_parameter_name, default_value=''),
++            DeclareLaunchArgument('use_rviz', default_value='true'),
++            DeclareLaunchArgument(
++                'execute', default_value='false',
++                description='Allow MoveIt to send trajectories to fr3_arm_controller'),
+             run_move_group_node,
++            rviz_node,
+         ]
+     )
+diff --git a/franka_fr3_moveit_config/package.xml b/franka_fr3_moveit_config/package.xml
+index 6a418af..beb27a0 100644
+--- a/franka_fr3_moveit_config/package.xml
++++ b/franka_fr3_moveit_config/package.xml
+@@ -29,6 +29,10 @@
+   <test_depend>ament_lint_common</test_depend>
+   <test_depend>ament_cmake_pytest</test_depend>
+ 
++  <exec_depend>joy</exec_depend>
++  <exec_depend>moveit_servo</exec_depend>
++  <exec_depend>fr3_skills</exec_depend>
++
+   <export>
+     <build_type>ament_cmake</build_type>
+   </export>
+diff --git a/franka_fr3_moveit_config/rviz/moveit.rviz b/franka_fr3_moveit_config/rviz/moveit.rviz
+index ac5a6f7..50d7e28 100644
+--- a/franka_fr3_moveit_config/rviz/moveit.rviz
++++ b/franka_fr3_moveit_config/rviz/moveit.rviz
+@@ -229,7 +229,7 @@ Visualization Manager:
+       Value: true
+     - Acceleration_Scaling_Factor: 0.1
+       Class: moveit_rviz_plugin/MotionPlanning
+-      Enabled: false
++      Enabled: true
+       Move Group Namespace: ""
+       MoveIt_Allow_Approximate_IK: false
+       MoveIt_Allow_External_Program: false
+@@ -282,7 +282,7 @@ Visualization Manager:
+         Goal State Color: 250; 128; 0
+         Interactive Marker Size: 0
+         Joint Violation Color: 255; 0; 255
+-        Planning Group: fr3_manipulator
++        Planning Group: fr3_arm
+         Query Goal State: true
+         Query Start State: false
+         Show Workspace: false
+@@ -394,4 +394,4 @@ Window Geometry:
+     collapsed: true
+   Width: 1848
+   X: 72
+-  Y: 454
+\ No newline at end of file
++  Y: 454
+diff --git a/franka_semantic_components/CMakeLists.txt b/franka_semantic_components/CMakeLists.txt
+index c3340fc..f8839cb 100644
+--- a/franka_semantic_components/CMakeLists.txt
++++ b/franka_semantic_components/CMakeLists.txt
+@@ -20,6 +20,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
+     geometry_msgs
+     sensor_msgs
+     hardware_interface
++    controller_interface
+     rclcpp_lifecycle
+     urdf)
+ 
 diff --git a/franka_fr3_moveit_config/config/fr3_arm_controller_real.yaml b/franka_fr3_moveit_config/config/fr3_arm_controller_real.yaml
 new file mode 100644
 index 0000000..75fe5f0
@@ -59,161 +269,175 @@ index 0000000..75fe5f0
 +        fr3_joint5: { trajectory: 0.05, goal: 0.01 }
 +        fr3_joint6: { trajectory: 0.05, goal: 0.01 }
 +        fr3_joint7: { trajectory: 0.05, goal: 0.01 }
-diff --git a/franka_fr3_moveit_config/launch/move_group.launch.py b/franka_fr3_moveit_config/launch/move_group.launch.py
-index f232904..eca5ce4 100644
---- a/franka_fr3_moveit_config/launch/move_group.launch.py
-+++ b/franka_fr3_moveit_config/launch/move_group.launch.py
-@@ -20,6 +20,7 @@ import os
- from ament_index_python.packages import get_package_share_directory
- from launch import LaunchDescription
- from launch.actions import DeclareLaunchArgument
+diff --git a/franka_fr3_moveit_config/config/fr3_arm_controller_fake.yaml b/franka_fr3_moveit_config/config/fr3_arm_controller_fake.yaml
+new file mode 100644
+index 0000000..0c031b3
+--- /dev/null
++++ b/franka_fr3_moveit_config/config/fr3_arm_controller_fake.yaml
+@@ -0,0 +1,8 @@
++# GenericSystem echoes position commands. Real hardware uses the effort config.
++/**:
++  fr3_arm_controller:
++    ros__parameters:
++      type: joint_trajectory_controller/JointTrajectoryController
++      command_interfaces: [position]
++      state_interfaces: [position, velocity]
++      joints: [fr3_joint1, fr3_joint2, fr3_joint3, fr3_joint4, fr3_joint5, fr3_joint6, fr3_joint7]
+diff --git a/franka_fr3_moveit_config/config/fr3_servo.yaml b/franka_fr3_moveit_config/config/fr3_servo.yaml
+new file mode 100644
+index 0000000..ca7e833
+--- /dev/null
++++ b/franka_fr3_moveit_config/config/fr3_servo.yaml
+@@ -0,0 +1,34 @@
++# Xbox input; maximum speed: 0.3 m/s and 1.5 rad/s.
++use_gazebo: false
++command_in_type: unitless
++scale:
++  linear: 0.3
++  rotational: 1.5
++  joint: 0.1
++publish_period: 0.02
++low_latency_mode: false
++command_out_type: trajectory_msgs/JointTrajectory
++publish_joint_positions: true
++publish_joint_velocities: true
++publish_joint_accelerations: false
++smoothing_filter_plugin_name: online_signal_smoothing::ButterworthFilterPlugin
++is_primary_planning_scene_monitor: false
++move_group_name: fr3_arm
++planning_frame: fr3_link0
++ee_frame_name: fr3_hand_tcp
++robot_link_command_frame: fr3_link0
++incoming_command_timeout: 0.1
++num_outgoing_halt_msgs_to_publish: 10
++lower_singularity_threshold: 17.0
++hard_stop_singularity_threshold: 30.0
++joint_limit_margin: 0.1
++leaving_singularity_threshold_multiplier: 2.0
++cartesian_command_in_topic: ~/delta_twist_cmds
++joint_command_in_topic: ~/delta_joint_cmds
++joint_topic: /joint_states
++status_topic: ~/status
++command_out_topic: /fr3_arm_controller/joint_trajectory
++check_collisions: true
++collision_check_rate: 10.0
++self_collision_proximity_threshold: 0.01
++scene_collision_proximity_threshold: 0.02
+diff --git a/franka_fr3_moveit_config/launch/franka_control.launch.py b/franka_fr3_moveit_config/launch/franka_control.launch.py
+new file mode 100644
+index 0000000..07c1504
+--- /dev/null
++++ b/franka_fr3_moveit_config/launch/franka_control.launch.py
+@@ -0,0 +1,54 @@
++"""Unified FR3 hardware, trajectory controller, MoveIt and RViz launch.
++
++Defaults to fake hardware and planning only. On a real robot the arm
++trajectory controller is loaded inactive; activate it explicitly for motion.
++"""
++from ament_index_python.packages import get_package_share_directory
++from launch import LaunchDescription
++from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
++from launch.launch_description_sources import PythonLaunchDescriptionSource
 +from launch.conditions import IfCondition
- from launch.substitutions import Command, FindExecutable, LaunchConfiguration
- from launch_ros.actions import Node
- from launch_ros.parameter_descriptions import ParameterValue
-@@ -49,6 +50,7 @@ def generate_launch_description():
-     fake_sensor_commands = LaunchConfiguration(
-         fake_sensor_commands_parameter_name)
-     namespace = LaunchConfiguration(namespace_parameter_name)
-+    execute = LaunchConfiguration('execute')
- 
-     db_arg = DeclareLaunchArgument(
-         'db', default_value='False', description='Database flag'
-@@ -94,23 +96,94 @@ def generate_launch_description():
-     robot_description_semantic = {'robot_description_semantic': ParameterValue(
-         robot_description_semantic_command, value_type=str)}
- 
--    kinematics_yaml = load_yaml(
--        'franka_fr3_moveit_config', 'config/kinematics.yaml')
-+    kinematics_yaml = {'robot_description_kinematics': load_yaml(
-+        'franka_fr3_moveit_config', 'config/kinematics.yaml')}
-+    ompl_config = load_yaml('franka_fr3_moveit_config', 'config/ompl_planning.yaml')
-+    # The bundled planner configuration still uses the former Panda group names.
-+    ompl_config['fr3_arm'] = ompl_config.pop('panda_arm')
-+    ompl_config.pop('panda_arm_hand', None)
-+    ompl_config.update({
-+        'planning_plugin': 'ompl_interface/OMPLPlanner',
-+        'request_adapters': 'default_planner_request_adapters/AddTimeOptimalParameterization '
-+                            'default_planner_request_adapters/ResolveConstraintFrames '
-+                            'default_planner_request_adapters/FixWorkspaceBounds '
-+                            'default_planner_request_adapters/FixStartStateBounds '
-+                            'default_planner_request_adapters/FixStartStateCollision '
-+                            'default_planner_request_adapters/FixStartStatePathConstraints',
-+        'start_state_max_bounds_error': 0.1,
-+    })
-+    planning_parameters = {
-+        'planning_pipelines': ['ompl'],
-+        'default_planning_pipeline': 'ompl',
-+        'ompl': ompl_config,
-+        # Plan-only by default. execute:=true connects to fr3_arm_controller
-+        # (load it with config/fr3_arm_controller_real.yaml first).
-+        'allow_trajectory_execution': ParameterValue(execute, value_type=bool),
-+        'publish_planning_scene': True,
-+        'publish_geometry_updates': True,
-+        'publish_state_updates': True,
-+        'publish_transforms_updates': True,
-+    }
++from launch.substitutions import LaunchConfiguration
++from launch_ros.actions import Node
++from pathlib import Path
 +
-+    # Arm only: the gripper is not part of the model while load_gripper:=false.
-+    moveit_controllers = {
-+        'moveit_controller_manager':
-+            'moveit_simple_controller_manager/MoveItSimpleControllerManager',
-+        'moveit_simple_controller_manager': {
-+            'controller_names': ['fr3_arm_controller'],
-+            'fr3_arm_controller': {
-+                'type': 'FollowJointTrajectory',
-+                'action_ns': 'follow_joint_trajectory',
-+                'default': True,
-+                'joints': [f'fr3_joint{i}' for i in range(1, 8)],
-+            },
-+        },
-+    }
-+    trajectory_execution = {
-+        'moveit_manage_controllers': False,
-+        'trajectory_execution.execution_duration_monitoring': True,
-+        'trajectory_execution.allowed_execution_duration_scaling': 1.2,
-+        'trajectory_execution.allowed_goal_duration_margin': 0.5,
-+        'trajectory_execution.allowed_start_tolerance': 0.01,
-+    }
- 
-     run_move_group_node = Node(
-         package='moveit_ros_move_group',
-         executable='move_group',
-         namespace=namespace,
-+        output='screen',
-+        remappings=[('joint_states', 'franka/joint_states')],
-         parameters=[
-             robot_description,
-             robot_description_semantic,
-             kinematics_yaml,
-+            planning_parameters,
-+            moveit_controllers,
-+            trajectory_execution,
-         ],
-     )
- 
-+    rviz_node = Node(
-+        package='rviz2', executable='rviz2', namespace=namespace, output='screen',
-+        arguments=['-d', os.path.join(get_package_share_directory(
-+            'franka_fr3_moveit_config'), 'rviz', 'moveit.rviz')],
-+        parameters=[robot_description, robot_description_semantic, kinematics_yaml],
-+        condition=IfCondition(LaunchConfiguration('use_rviz')),
-+    )
 +
-     return LaunchDescription(
-         [
-             db_arg,
-+            DeclareLaunchArgument(robot_ip_parameter_name, default_value='172.16.0.2'),
-+            DeclareLaunchArgument(load_gripper_parameter_name, default_value='false'),
-+            DeclareLaunchArgument(use_fake_hardware_parameter_name, default_value='false'),
-+            DeclareLaunchArgument(fake_sensor_commands_parameter_name, default_value='false'),
-+            DeclareLaunchArgument(namespace_parameter_name, default_value=''),
-+            DeclareLaunchArgument('use_rviz', default_value='true'),
-+            DeclareLaunchArgument(
-+                'execute', default_value='false',
-+                description='Allow MoveIt to send trajectories to fr3_arm_controller'),
-             run_move_group_node,
-+            rviz_node,
-         ]
-     )
-diff --git a/franka_fr3_moveit_config/rviz/moveit.rviz b/franka_fr3_moveit_config/rviz/moveit.rviz
-index ac5a6f7..50d7e28 100644
---- a/franka_fr3_moveit_config/rviz/moveit.rviz
-+++ b/franka_fr3_moveit_config/rviz/moveit.rviz
-@@ -229,7 +229,7 @@ Visualization Manager:
-       Value: true
-     - Acceleration_Scaling_Factor: 0.1
-       Class: moveit_rviz_plugin/MotionPlanning
--      Enabled: false
-+      Enabled: true
-       Move Group Namespace: ""
-       MoveIt_Allow_Approximate_IK: false
-       MoveIt_Allow_External_Program: false
-@@ -282,7 +282,7 @@ Visualization Manager:
-         Goal State Color: 250; 128; 0
-         Interactive Marker Size: 0
-         Joint Violation Color: 255; 0; 255
--        Planning Group: fr3_manipulator
-+        Planning Group: fr3_arm
-         Query Goal State: true
-         Query Start State: false
-         Show Workspace: false
-@@ -394,4 +394,4 @@ Window Geometry:
-     collapsed: true
-   Width: 1848
-   X: 72
--  Y: 454
-\ No newline at end of file
-+  Y: 454
-diff --git a/franka_semantic_components/CMakeLists.txt b/franka_semantic_components/CMakeLists.txt
-index c3340fc..f8839cb 100644
---- a/franka_semantic_components/CMakeLists.txt
-+++ b/franka_semantic_components/CMakeLists.txt
-@@ -20,6 +20,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
-     geometry_msgs
-     sensor_msgs
-     hardware_interface
-+    controller_interface
-     rclcpp_lifecycle
-     urdf)
- 
++def launch_nodes(context):
++    fake = LaunchConfiguration('use_fake_hardware').perform(context).lower() == 'true'
++    gripper = LaunchConfiguration('load_gripper').perform(context).lower()
++    address = LaunchConfiguration('robot_ip').perform(context)
++    execute = LaunchConfiguration('execute').perform(context)
++    share = Path(get_package_share_directory('franka_fr3_moveit_config'))
++    bringup = Path(get_package_share_directory('franka_bringup'))
++    hardware = IncludeLaunchDescription(
++        PythonLaunchDescriptionSource(str(bringup/'launch/franka.launch.py')),
++        launch_arguments={'arm_id': 'fr3', 'robot_ip': address,
++                          'use_fake_hardware': str(fake).lower(),
++                          'load_gripper': gripper}.items())
++    config = 'fr3_arm_controller_fake.yaml' if fake else 'fr3_arm_controller_real.yaml'
++    arguments = ['fr3_arm_controller', '--controller-manager', '/controller_manager',
++                 '--controller-manager-timeout', '60', '--param-file', str(share/'config'/config)]
++    if not fake:
++        arguments.append('--inactive')
++    controller = Node(package='controller_manager', executable='spawner',
++                      arguments=arguments, output='screen')
++    moveit = IncludeLaunchDescription(
++        PythonLaunchDescriptionSource(str(share/'launch/move_group.launch.py')),
++        launch_arguments={'robot_ip': address, 'load_gripper': gripper,
++                          'use_fake_hardware': str(fake).lower(), 'execute': execute,
++                          'use_rviz': LaunchConfiguration('use_rviz').perform(context)}.items())
++    scene = Node(package='fr3_skills', executable='planning_scene', output='screen',
++                 condition=IfCondition(LaunchConfiguration('load_table')))
++    return [hardware, controller, moveit, scene]
++
++
++def generate_launch_description():
++    return LaunchDescription([
++        DeclareLaunchArgument('robot_ip', default_value='172.16.0.2'),
++        DeclareLaunchArgument('use_fake_hardware', default_value='true'),
++        DeclareLaunchArgument('load_gripper', default_value='true'),
++        DeclareLaunchArgument('execute', default_value='false'),
++        DeclareLaunchArgument('use_rviz', default_value='true'),
++        DeclareLaunchArgument('load_table', default_value='false'),
++        OpaqueFunction(function=launch_nodes),
++    ])
+diff --git a/franka_fr3_moveit_config/launch/xbox_teleop.launch.py b/franka_fr3_moveit_config/launch/xbox_teleop.launch.py
+new file mode 100644
+index 0000000..043e084
+--- /dev/null
++++ b/franka_fr3_moveit_config/launch/xbox_teleop.launch.py
+@@ -0,0 +1,52 @@
++"""FR3 Xbox teleoperation. Real arm controller remains inactive at startup."""
++from pathlib import Path
++import yaml
++import xacro
++from ament_index_python.packages import get_package_share_directory
++from launch import LaunchDescription
++from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
++from launch.conditions import IfCondition
++from launch.launch_description_sources import PythonLaunchDescriptionSource
++from launch.substitutions import LaunchConfiguration
++from launch_ros.actions import Node
++from launch_ros.parameter_descriptions import ParameterValue
++
++
++def nodes(context):
++    share = Path(get_package_share_directory('franka_fr3_moveit_config'))
++    description = Path(get_package_share_directory('franka_description'))
++    fake = LaunchConfiguration('use_fake_hardware').perform(context)
++    hand = LaunchConfiguration('load_gripper').perform(context)
++    robot = {'robot_description': xacro.process_file(str(description/'robots/fr3/fr3.urdf.xacro'),
++             mappings={'arm_id': 'fr3', 'hand': hand, 'ros2_control': 'false'}).toxml()}
++    semantic = {'robot_description_semantic': xacro.process_file(str(description/'robots/fr3/fr3.srdf.xacro'),
++                mappings={'hand': hand}).toxml()}
++    with (share/'config/kinematics.yaml').open() as f:
++        kinematics = {'robot_description_kinematics': yaml.safe_load(f)}
++    with (share/'config/fr3_servo.yaml').open() as f:
++        servo = {'moveit_servo': yaml.safe_load(f)}
++    return [
++        IncludeLaunchDescription(PythonLaunchDescriptionSource(str(share/'launch/franka_control.launch.py')),
++            launch_arguments={'robot_ip': LaunchConfiguration('robot_ip').perform(context),
++                'use_fake_hardware': fake, 'load_gripper': hand, 'execute': 'false',
++                'load_table': 'true', 'use_rviz': LaunchConfiguration('use_rviz').perform(context)}.items()),
++        Node(package='moveit_servo', executable='servo_node_main', name='servo_node', output='screen',
++             parameters=[robot, semantic, kinematics, servo]),
++        Node(package='joy', executable='joy_node', name='fr3_joy', output='screen',
++             parameters=[{'device_id': ParameterValue(LaunchConfiguration('device_id'), value_type=int), 'deadzone': 0.05,
++                          'autorepeat_rate': 50.0}], remappings=[('joy', '/fr3/joy')],
++             condition=IfCondition(LaunchConfiguration('start_joy'))),
++        Node(package='fr3_skills', executable='xbox_teleop', output='screen'),
++    ]
++
++
++def generate_launch_description():
++    return LaunchDescription([
++        DeclareLaunchArgument('robot_ip', default_value='172.16.0.2'),
++        DeclareLaunchArgument('use_fake_hardware', default_value='true'),
++        DeclareLaunchArgument('load_gripper', default_value='true'),
++        DeclareLaunchArgument('use_rviz', default_value='true'),
++        DeclareLaunchArgument('device_id', default_value='0'),
++        DeclareLaunchArgument('start_joy', default_value='true'),
++        OpaqueFunction(function=nodes),
++    ])

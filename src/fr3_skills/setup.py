@@ -22,6 +22,8 @@ setup(
     entry_points={
         'console_scripts': [
             'move_home = fr3_skills.move_home:main',
+            'planning_scene = fr3_skills.planning_scene:main',
+            'xbox_teleop = fr3_skills.xbox_teleop:main',
             'pose_listener = fr3_skills.pose_listener:main',
             'gripper = fr3_skills.gripper:main',
             'pick_place = fr3_skills.pick_place:main',

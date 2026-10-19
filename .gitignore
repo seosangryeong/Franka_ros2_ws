@@ -18,3 +18,5 @@ __pycache__/
 /*.jpg
 /*.jpeg
 /*.png
+
+.previous_pc/
