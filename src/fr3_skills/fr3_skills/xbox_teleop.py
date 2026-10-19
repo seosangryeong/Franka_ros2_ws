@@ -5,7 +5,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from action_msgs.msg import GoalStatus
-from franka_msgs.action import Move
+from franka_msgs.action import Move, Grasp
 from sensor_msgs.msg import Joy, JointState
 from geometry_msgs.msg import TwistStamped
 from std_srvs.srv import Trigger
@@ -58,6 +58,12 @@ class GripperToggle:
         self.completed_at = -math.inf
         self.completed_width = None
         self.busy = False
+        self.holding = False
+        node.declare_parameter('gripper_force', 20.0)
+        self.force = float(node.get_parameter('gripper_force').value)
+        if not math.isfinite(self.force) or not 0.0 < self.force <= 70.0:
+            raise ValueError('gripper_force must be finite and in (0, 70] N')
+        self.grasp_client = ActionClient(node, Grasp, '/franka_gripper/grasp')
         self.client = ActionClient(node, Move, '/franka_gripper/move')
         self.subscription = node.create_subscription(
             JointState, '/franka_gripper/joint_states', self.on_state, 10)
@@ -85,18 +91,29 @@ class GripperToggle:
         if self.width is None or now - self.state_time > 0.5:
             self.node.get_logger().warning('A ignored: no fresh gripper joint state.')
             return
-        if not self.client.server_is_ready():
-            self.node.get_logger().warning('A ignored: /franka_gripper/move unavailable.')
-            return
         width = self.width
         # An action can finish slightly before the corresponding state arrives.
         if self.completed_width is not None and self.state_time <= self.completed_at:
             width = self.completed_width
-        target = 0.0 if width >= 0.06 else 0.08
+        # A successful grasp must toggle open even for objects wider than 6 cm.
+        target = 0.08 if self.holding or width < 0.06 else 0.0
+        client = self.grasp_client if target == 0.0 else self.client
+        if not client.server_is_ready():
+            self.node.get_logger().warning('A ignored: gripper action server unavailable.')
+            return
+        if target == 0.0:
+            goal = Grasp.Goal(width=0.0, speed=0.03, force=self.force)
+            # Unknown object width: accept contact across the hand opening range.
+            # This tolerance is not an object-presence or secure-grasp check.
+            goal.epsilon.inner = 0.005
+            goal.epsilon.outer = 0.08
+        else:
+            goal = Move.Goal(width=target, speed=0.03)
         self.busy = True
-        self.node.get_logger().info('A: closing gripper' if target == 0.0 else 'A: opening gripper')
+        self.node.get_logger().info(
+            f'A: grasping with {self.force:g} N' if target == 0.0 else 'A: opening gripper')
         try:
-            future = self.client.send_goal_async(Move.Goal(width=target, speed=0.03))
+            future = client.send_goal_async(goal)
             future.add_done_callback(lambda f: self.goal_response(f, target))
         except Exception as error:
             self.failed(error)
@@ -119,8 +136,11 @@ class GripperToggle:
                 return
             self.completed_at = time.monotonic()
             self.completed_width = target
+            self.holding = target == 0.0
             self.busy = False
-            self.node.get_logger().info('Gripper closed' if target == 0.0 else 'Gripper open')
+            self.node.get_logger().info(
+                'Grasp completed; next A opens (verify object is held).' if self.holding
+                else 'Gripper open')
         except Exception as error:
             self.failed(error)
 

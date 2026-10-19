@@ -8,6 +8,7 @@
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>joy</exec_depend>
   <exec_depend>moveit_servo</exec_depend>
